@@ -1096,4 +1096,127 @@ void loop() {
     // В реальном устройстве нужна достоверная проверка
     // выезда, например двумя датчиками направления.
     if (passageOccupied) hasPassedExit = true;
-    if (hasPassedE
+    if (hasPassedExit && !passageOccupied && !occupied) {
+      visit = NO_VISIT; // освобождаем только после выезда
+      hasPassedExit = false;
+      requestGate(false);
+      Serial.println("RESERVATION:RELEASED");
+    }
+  }
+
+  if (visit == RESERVED || visit == EXITING) {
+    if (millis() - blinkAt >= 350) {
+      blinkAt = millis(); ledState = !ledState;
+    }
+  } else {
+    ledState = (visit == NO_VISIT && !occupied);
+  }
+  digitalWrite(PLACE_LED, ledState);
+}
+`;
+const partsSource=`ФУНКЦИОНАЛЬНЫЕ СОЕДИНЕНИЯ
+──────────────────────────────────────────────
+Электрощит → блок питания → устройства
+Магнитный считыватель → идентификатор сотрудника
+Экран / клавиатура → ввод теудат-зеут
+Датчики → Arduino → команды исполнительным узлам
+
+Arduino → силовой драйвер → привод шлагбаума (L/R)
+Arduino → экран: место и маршрут
+Arduino → индикатор: датчик + лампа
+
+ПРИМЕР КОНТАКТОВ ДЛЯ УЧЕБНОГО КОДА
+D2    Датчик места, INPUT_PULLUP, активен LOW
+D3    Датчик проезда, INPUT_PULLUP, активен LOW
+D5    Условный выход команды открытия
+D6    Условный выход команды закрытия
+D9    Световой индикатор через подходящий драйвер
+Serial  Имитирует ввод карты / ID, 9600 бод
+
+ЧТО ЕЩЁ НУЖНО ВЫБРАТЬ
+Модель платы, напряжения, мощности, защиты,
+драйвер мотора, концевики, считыватель и дисплей.
+
+Схема на сайте функциональная.
+Она не задаёт реальное электрическое подключение.
+`;
+const sources={js:jsSource,ino:inoSource,parts:partsSource};
+function showCode(k){
+ codeTab=k;$$('[data-code]').forEach(b=>b.classList.toggle('active',b.dataset.code===k));
+ const text=sources[k];const escape=t=>t.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+ $('#codeView').innerHTML=text.split('\n').map(line=>line.trim().startsWith('//')?'<span class="token-comment">'+escape(line)+'</span>':escape(line).replace(/(&quot;.*?&quot;|".*?")/g,'<span class="token-string">$1</span>').replace(/\b(const|let|if|else|return|function|void|bool|enum|while|int|byte)\b/g,'<span class="token-keyword">$1</span>')).join('\n');
+ $('#codeNote').textContent=k==='js'?'Фрагменты реального JavaScript этой страницы. Движение, резервирование и проверка сотрудника выполняются здесь. Полный исходник находится в скачиваемом HTML.':k==='ino'?'Это учебный Serial-пример для одного места. Управляющие выходы не включаются: для настоящего привода потребуются драйвер, концевики, защита, тайм-ауты и адаптация к оборудованию.':'Назначение контактов относится только к примеру кода, не к утверждённой электрической схеме.';
+}
+$$('[data-code]').forEach(b=>b.onclick=()=>showCode(b.dataset.code));
+$('#copyCode').onclick=async()=>{try{await navigator.clipboard.writeText(sources[codeTab]);toast('Код скопирован')}catch{toast('Копирование недоступно. Используйте «Скачать».')}};
+$('#saveCode').onclick=()=>download(sources[codeTab],codeTab==='ino'?'ParkingLab.ino':codeTab==='js'?'parking-simulation.js':'connections.txt');
+const originalHtml = location.protocol === 'file:' ? Promise.resolve(null) : fetch(location.href).then(r=>r.text()).catch(()=>null);
+$('#downloadHtml').onclick=async e=>{
+ e.preventDefault();
+ const html=await originalHtml;
+ download(html||'<!DOCTYPE html>\n'+document.documentElement.outerHTML,'Parking_Lab.html','text/html');
+ toast('HTML-файл сохранён. Можно открыть локально.');
+};
+
+// Per-space NPC controls preserve the active employee reservation.
+function renderNPC(){
+ const signature=slots.map(s=>s.status).join(',')+'|'+[...npcSlots].sort().join(',')+'|'+state.slot;if(signature===npcSignature)return;npcSignature=signature;
+ const html=slots.map((s,i)=>{
+  const own=state.slot===i,bad=s.status==='fault',busy=npcSlots.has(i),caption=own?'Ваше место':bad?'Сбой':busy?'NPC':'Пусто';
+  return '<button class="npc-space '+(own?'own':bad?'fault':busy?'busy':'free')+'" data-npc="'+i+'" aria-label="'+s.label+': '+caption+'" aria-pressed="'+busy+'" '+(own||bad?'disabled':'')+'><b>'+s.label+'</b><span>'+(busy?'▰':'＋')+'</span><small>'+caption+'</small></button>';
+ }).join('');
+ // Avoid replacing focused controls on every simulation frame.
+ if($('#npcGrid').innerHTML!==html){$('#npcGrid').innerHTML=html;$$('[data-npc]').forEach(b=>b.onclick=()=>toggleNPC(Number(b.dataset.npc)))}
+}
+function toggleNPC(i){
+ if(state.slot===i||slots[i].status==='fault')return;
+ if(npcSlots.has(i))npcSlots.delete(i);else npcSlots.add(i);
+ configureSlots();log(slots[i].label+': '+(npcSlots.has(i)?'NPC занял место':'NPC уехал, место свободно'),npcSlots.has(i)?'':'good');
+ if(state.phase==='denied'&&state.auth==='PARKING FULL'&&slots.some(s=>s.status==='free'))toast('Появилось свободное место. Нажмите «Проверить места».');
+}
+function setNPCLayout(mode){
+ npcSlots.clear();
+ const add=mode==='all'?slots.map((_,i)=>i):mode==='default'?initialBusy:[];
+ add.forEach(i=>{if(state.slot!==i)npcSlots.add(i)});
+ configureSlots();log(mode==='all'?'NPC заняли все доступные места':mode==='empty'?'Все NPC-машины убраны':'Исходное размещение NPC восстановлено');
+}
+$('#npcAll').onclick=()=>setNPCLayout('all');$('#npcEmpty').onclick=()=>setNPCLayout('empty');$('#npcDefault').onclick=()=>setNPCLayout('default');
+$('#retryBtn').onclick=()=>{
+ if(state.phase!=='denied'||state.auth!=='PARKING FULL')return;
+ const e=employees.find(e=>e.card===state.visitor?.card);
+ if(!e||!e.enabled){state.auth=null;state.denial=e?'blocked':'unknown';assign();return}
+ state.auth=e.card;setPhase('checking');log('Повторная проверка свободных мест');
+};
+function saveRegistry(){
+ try{localStorage.setItem('parkingLab.registry.v1',JSON.stringify(employees))}catch{toast('Браузер не разрешил сохранение. Реестр действует до закрытия страницы.')}
+ renderRegistry();
+}
+function renderRegistry(preferred=null){
+ const list=$('#registryList');list.innerHTML='';
+ employees.forEach(e=>{
+  const row=document.createElement('div');row.className='registry-entry';
+  const info=document.createElement('span');const num=document.createElement('b');num.textContent=e.id;info.append(num);
+  const status=document.createElement('small');status.textContent=e.enabled?'Въезд разрешён':'Въезд запрещён';status.className=e.enabled?'allowed':'blocked';info.append(status);
+  const toggle=document.createElement('button');toggle.textContent=e.enabled?'Запретить':'Разрешить';toggle.setAttribute('aria-label',(e.enabled?'Запретить':'Разрешить')+' въезд '+e.id);
+  toggle.onclick=()=>{e.enabled=!e.enabled;saveRegistry();log('Реестр: доступ '+(e.enabled?'разрешён':'запрещён'))};
+  const del=document.createElement('button');del.textContent='×';del.setAttribute('aria-label','Удалить '+e.id);del.onclick=()=>{employees=employees.filter(v=>v!==e);saveRegistry();log('Запись удалена из реестра')};
+  row.append(info,toggle,del);list.append(row);
+ });
+ if(!employees.length){const p=document.createElement('p');p.textContent='Реестр пуст. Добавьте первый тестовый номер.';list.append(p)}
+ const select=$('#credentialMode'),selectedCard=preferred||select.value;select.innerHTML='';
+ employees.forEach(e=>{const o=document.createElement('option');o.value=e.card;o.textContent='Карта · '+e.id+(e.enabled?'':' · запрет');select.append(o)});
+ const unknown=document.createElement('option');unknown.value='UNKNOWN';unknown.textContent='Неизвестная карта';select.append(unknown);
+ select.value=employees.some(e=>e.card===selectedCard)?selectedCard:employees[0]?.card||'UNKNOWN';
+ const valid=employees.filter(e=>e.enabled);
+ $('#registryHint').textContent=valid.length?'Разрешённые тестовые номера: '+valid.map(e=>e.id).join(', '):'Нет разрешённых номеров. Добавьте запись в реестр справа.';
+}
+$('#registryForm').onsubmit=e=>{
+ e.preventDefault();const id=$('#registryId').value.trim(),enabled=$('#registryAllow').checked;
+ if(!/^\d{9}$/.test(id)){$('#registryError').textContent='Нужно ровно 9 цифр.';return}
+ let employee=employees.find(e=>e.id===id);
+ if(employee)employee.enabled=enabled;
+ else{employee={id,card:'CARD-'+id,name:'Сотрудник '+(employees.length+1),enabled};employees.push(employee)}
+ $('#registryError').textContent='Запись сохранена';$('#registryId').value='';saveRegistry();renderRegistry(employee.card);log('Реестр обновлён: '+(enabled?'въезд разрешён':'въезд запрещён'),'good');
+};
+renderRegistry();renderNPC();
+</script></body></html>
